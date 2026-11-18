@@ -6,6 +6,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -26,6 +27,7 @@ import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import java.io.File
+import java.net.HttpURLConnection
 import java.net.URL
 
 class MainActivity : AppCompatActivity() {
@@ -131,23 +133,71 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        bar.isIndeterminate = true
         Thread {
             try {
                 YoutubeDL.getInstance().init(application)
                 FFmpeg.getInstance().init(application)
-                ready = true
+            } catch (e: Exception) {
                 runOnUiThread {
-                    status.text = "প্রস্তুত। লিংক পেস্ট করুন।"
-                    val p = pendingUrl
-                    if (p != null) {
-                        pendingUrl = null
-                        requestInfo(p)
-                    }
+                    bar.isIndeterminate = false
+                    status.text = "শুরু করতে সমস্যা: " + e.message
+                }
+                return@Thread
+            }
+            try {
+                val prefs = getSharedPreferences("app", MODE_PRIVATE)
+                val last = prefs.getLong("last_update", 0L)
+                if (System.currentTimeMillis() - last > 12L * 3600 * 1000) {
+                    runOnUiThread { status.text = "ডাউনলোড ইঞ্জিন আপডেট হচ্ছে (কিছুক্ষণ লাগতে পারে)..." }
+                    YoutubeDL.getInstance().updateYoutubeDL(application)
+                    prefs.edit().putLong("last_update", System.currentTimeMillis()).apply()
                 }
             } catch (e: Exception) {
-                runOnUiThread { status.text = "শুরু করতে সমস্যা: " + e.message }
+            }
+            ready = true
+            runOnUiThread {
+                bar.isIndeterminate = false
+                status.text = "প্রস্তুত। লিংক পেস্ট করুন।"
+                val p = pendingUrl
+                if (p != null) {
+                    pendingUrl = null
+                    requestInfo(p)
+                }
             }
         }.start()
+    }
+
+    private fun resolveUrl(url: String): String {
+        if (!url.contains("xhslink.cn") && !url.contains("rednote.com")) return url
+        try {
+            var cur = url
+            for (i in 1..6) {
+                val c = URL(cur).openConnection() as HttpURLConnection
+                c.instanceFollowRedirects = false
+                c.connectTimeout = 10000
+                c.readTimeout = 10000
+                c.setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36"
+                )
+                val code = c.responseCode
+                val loc = c.getHeaderField("Location")
+                c.disconnect()
+                if (code in 300..399 && loc != null) {
+                    cur = if (loc.startsWith("http")) loc else URL(URL(cur), loc).toString()
+                } else {
+                    break
+                }
+            }
+            val rp = Uri.parse(cur).getQueryParameter("redirectPath")
+            if (rp != null) cur = rp
+            cur = cur.replace("rednote.com", "xiaohongshu.com")
+            if (cur.startsWith("http://")) cur = "https://" + cur.substring(7)
+            return cur
+        } catch (e: Exception) {
+            return url
+        }
     }
 
     private fun requestInfo(url: String) {
@@ -164,7 +214,7 @@ class MainActivity : AppCompatActivity() {
         status.text = "লিংক দেখা হচ্ছে..."
         Thread {
             try {
-                val req = YoutubeDLRequest(url)
+                val req = YoutubeDLRequest(resolveUrl(url))
                 req.addOption("--no-playlist")
                 req.addOption("--socket-timeout", "15")
                 val info = YoutubeDL.getInstance().getInfo(req)
@@ -212,7 +262,7 @@ class MainActivity : AppCompatActivity() {
                 dir.deleteRecursively()
                 dir.mkdirs()
 
-                val req = YoutubeDLRequest(url)
+                val req = YoutubeDLRequest(resolveUrl(url))
                 req.addOption("-f", "b[ext=mp4]/b")
                 req.addOption("--no-playlist")
                 req.addOption("-N", "8")
